@@ -1,0 +1,10 @@
+{
+  "id": "simple-heading",
+  "name": "Simple Heading",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "标题编号与目录：二级起自动编号，一键生成可撤销的目录。",
+  "author": "luodanshibing",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
