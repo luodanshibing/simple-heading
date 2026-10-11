@@ -11,11 +11,13 @@
  * 5. 一级标题（#）不编号、不进目录。
  *
  * 设计红线（改代码前先读）：
- *   1. 纯函数为主  编号 / 目录 / 清理全是"文本进、文本出"，不碰文件系统 —— 因此可单测、可回退。
- *   2. 精确可逆    本插件加的序号只有 `1.` / `1.1` / `一、` 这几种形态；「清除」只删这些，
- *                  不会动 `2026 年计划` 这类你自己的数字。
- *   3. 目录有边界  目录块用 <!-- simple-heading:toc:start/end --> 包住：更新只替换块内，
- *                  清除只删块。插件卸载后残留的目录也能用同一命令清掉。
+ *   1. 不碰启动    onload 只做「读一次设置 + 注册 5 个命令 + 1 个设置页」：
+ *                  不遍历库、不监听事件、不起定时器、不碰 vault 层。
+ *                  （tools/test.mjs 里有一条**读源码**的断言在守这条。）
+ *   2. 不自动改文档 全部是手动命令；不点它，文档永远不变。
+ *   3. 精确可逆    序号只有 `1.` / `1.1` / `一、` 这几种形态；目录块**默认不加任何
+ *                  HTML 注释标记**，靠"加粗标题行 + 内部标题链接"结构识别 ——
+ *                  所以「清除」能把文档逐字节还原（单测有往返断言）。
  *   4. 局部修改    插入目录只动插入点附近的空行，不重排文档其他部分。
  *   5. 一次事务    用 editor.transaction 提交，撤销历史只多一步，不逐行 setValue。
  *   6. 无构建      main.js 既是源码也是产物，直接改它。
@@ -31,13 +33,15 @@
 const obsidian = require('obsidian');
 const { Plugin, PluginSettingTab, Setting, Notice } = obsidian;
 
+/* 可选：给目录块加 HTML 注释标记（默认不用，见 tocMarker 设置） */
 const TOC_START = '<!-- simple-heading:toc:start -->';
 const TOC_END = '<!-- simple-heading:toc:end -->';
 const CN_DIGITS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
 const DEFAULT_SETTINGS = {
   numberStyle: 'chinese', // chinese（一、）| numeric（1.）
-  tocTitle: '目录', // 目录首行的加粗文字；留空则不要这一行
+  tocTitle: '目录', // 目录块首行的加粗文字；留空则不要这一行
+  tocMarker: 'none', // none（不加标记，靠结构识别）| comment（用 HTML 注释包住）
   tocPosition: 'beforeFirstH2', // beforeFirstH2 | cursor
   tocMaxLevel: 6, // 目录收录到几级
   tocIndent: 2, // 每深一级缩进几个空格
@@ -59,6 +63,7 @@ function normalizeSettings(raw) {
     }
   }
   if (['chinese', 'numeric'].indexOf(out.numberStyle) < 0) out.numberStyle = DEFAULT_SETTINGS.numberStyle;
+  if (['none', 'comment'].indexOf(out.tocMarker) < 0) out.tocMarker = DEFAULT_SETTINGS.tocMarker;
   if (['beforeFirstH2', 'cursor'].indexOf(out.tocPosition) < 0) out.tocPosition = DEFAULT_SETTINGS.tocPosition;
   out.tocMaxLevel = clampInt(out.tocMaxLevel, 2, 6, 6);
   out.tocIndent = clampInt(out.tocIndent, 0, 8, 2);
@@ -126,8 +131,20 @@ function parseHeadings(text) {
   return out;
 }
 
-/** 目录块的行范围（含标记行）；找不到返回 null */
-function findTocBlock(text) {
+/* ---------- 目录块的识别：两种方式 ---------- */
+
+/** 是目录条目行吗：`- [文字](#锚点)` */
+function isTocEntryLine(line) {
+  return /^\s*[-*] \[[^\]]*\]\(#[^)]*\)\s*$/.test(String(line == null ? '' : line));
+}
+
+/** 是"只有加粗"的一行吗：`**目录**` */
+function isBoldOnlyLine(line) {
+  return /^\s*\*\*[^*]+\*\*\s*$/.test(String(line == null ? '' : line));
+}
+
+/** 注释标记模式：靠 start/end 两行找块 */
+function findMarkedBlock(text) {
   const lines = String(text == null ? '' : text).split('\n');
   let start = -1;
   for (let i = 0; i < lines.length; i += 1) {
@@ -138,35 +155,74 @@ function findTocBlock(text) {
   }
   if (start < 0) return null;
   for (let j = start + 1; j < lines.length; j += 1) {
-    if (lines[j].trim() === TOC_END) return { startLine: start, endLine: j };
+    if (lines[j].trim() === TOC_END) return { startLine: start, endLine: j, entries: j - start - 1 };
   }
   return null;
 }
 
-/** 目录块内的行号（编号 / 清除时要跳过块内任何内容） */
-function tocLineSet(text) {
-  const range = findTocBlock(text);
+/**
+ * 默认方式（无标记）：靠结构识别 ——
+ *   一行加粗标题（默认 `**目录**`）+ 紧随其后的若干行内部标题链接。
+ *   两者缺一不可；tocTitle 留空时要求连续 ≥2 行内部链接（更保守）。
+ * 因此你手写的普通链接列表（哪怕全是内部链接）不会被误认，除非它正好以 `**目录**` 开头。
+ */
+function findTocByShape(text, settings) {
+  const s = normalizeSettings(settings);
+  const lines = String(text == null ? '' : text).split('\n');
+  const wantTitle = s.tocTitle ? `**${s.tocTitle}**` : null;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    let contentFrom = i;
+    if (wantTitle) {
+      if (lines[i].trim() !== wantTitle) continue;
+      contentFrom = i + 1;
+    }
+    let j = contentFrom;
+    let count = 0;
+    while (j < lines.length && isTocEntryLine(lines[j])) {
+      count += 1;
+      j += 1;
+    }
+    const min = wantTitle ? 1 : 2;
+    if (count >= min) return { startLine: i, endLine: j - 1, entries: count };
+  }
+  return null;
+}
+
+/** 统一的"找目录块"入口：按设置选识别方式 */
+function findTocBlock(text, settings) {
+  const s = normalizeSettings(settings);
+  return s.tocMarker === 'comment' ? findMarkedBlock(text) : findTocByShape(text, s);
+}
+
+/** 目录块内的行号（编号 / 清除时跳过块内内容） */
+function tocLineSet(text, settings) {
+  const range = findTocBlock(text, settings);
   const set = new Set();
   if (!range) return set;
   for (let i = range.startLine; i <= range.endLine; i += 1) set.add(i);
   return set;
 }
 
+/* ---------- 编号 ---------- */
+
 /**
  * 重排编号：二级起重新编号，序号每次从头重算 —— 删掉标题后不会断号。
  * 一级标题原样保留（不编号、也不去号）。
- * 注意：标题用 parseHeadings 取，**已经跳过围栏代码块与目录块**。
+ * 注意：标题用 parseHeadings 取，**已经跳过围栏代码块**。
  */
 function renumberText(text, settings) {
   const s = normalizeSettings(settings);
   const src = String(text == null ? '' : text);
   const lines = src.split('\n');
   const found = parseHeadings(src);
+  const skip = tocLineSet(src, s);
   const counters = [0, 0, 0, 0, 0, 0, 0];
   let count = 0;
   let changed = false;
 
   for (const h of found) {
+    if (skip.has(h.line)) continue;
     if (h.level === 1) continue; // 一级标题不编号
     counters[h.level] = (counters[h.level] || 0) + 1;
     for (let l = h.level + 1; l <= 6; l += 1) counters[l] = 0;
@@ -180,12 +236,14 @@ function renumberText(text, settings) {
 }
 
 /** 清除编号（只删本插件加过的形态；一级标题不动，代码块与目录块不动） */
-function clearNumbers(text) {
+function clearNumbers(text, settings) {
   const src = String(text == null ? '' : text);
   const lines = src.split('\n');
   const found = parseHeadings(src);
+  const skip = tocLineSet(src, settings);
   let count = 0;
   for (const h of found) {
+    if (skip.has(h.line)) continue;
     if (h.level === 1) continue;
     const body = stripNumberPrefix(h.text);
     if (body !== h.text) {
@@ -196,6 +254,8 @@ function clearNumbers(text) {
   return { text: lines.join('\n'), count: count };
 }
 
+/* ---------- 目录 ---------- */
+
 function escapeLinkText(text) {
   return String(text == null ? '' : text).replace(/[[\]]/g, (c) => `\\${c}`);
 }
@@ -205,7 +265,7 @@ function encodeAnchor(text) {
   return encodeURIComponent(String(text == null ? '' : text));
 }
 
-/** 生成目录块（含标记行） */
+/** 生成目录块：默认只有"加粗标题 + 链接列表"，不加任何注释标记 */
 function buildTocBlock(headings, settings) {
   const s = normalizeSettings(settings);
   const items = (Array.isArray(headings) ? headings : []).filter((h) => h && h.level >= 2 && h.level <= s.tocMaxLevel);
@@ -215,16 +275,14 @@ function buildTocBlock(headings, settings) {
     const indent = ' '.repeat(Math.max(0, (h.level - 2) * s.tocIndent));
     body.push(`${indent}- [${escapeLinkText(h.text)}](#${encodeAnchor(h.text)})`);
   }
-  if (items.length === 0) {
-    body.push(s.tocTitle ? '（文档里还没有二级及以下标题）' : '- （文档里还没有二级及以下标题）');
-  }
-  return [TOC_START].concat(body).concat([TOC_END]).join('\n');
+  if (items.length === 0) body.push(s.tocTitle ? '（文档里还没有二级及以下标题）' : '- （文档里还没有二级及以下标题）');
+  return s.tocMarker === 'comment' ? [TOC_START].concat(body).concat([TOC_END]).join('\n') : body.join('\n');
 }
 
 /** 用新块替换旧块；没有旧块则原样返回 */
-function replaceTocBlock(text, block) {
+function replaceTocBlock(text, block, settings) {
   const src = String(text == null ? '' : text);
-  const range = findTocBlock(src);
+  const range = findTocBlock(src, settings);
   if (!range) return src;
   const lines = src.split('\n');
   return lines.slice(0, range.startLine).concat(block.split('\n')).concat(lines.slice(range.endLine + 1)).join('\n');
@@ -234,9 +292,9 @@ function replaceTocBlock(text, block) {
  * 删掉目录块：把块本身去掉；如果块原来的位置两侧都成了空行，只合并掉一个 ——
  * 这样「插入 → 清除」能逐字节回到原文（单测里专门验这条）。
  */
-function removeTocBlock(text) {
+function removeTocBlock(text, settings) {
   const src = String(text == null ? '' : text);
-  const range = findTocBlock(src);
+  const range = findTocBlock(src, settings);
   if (!range) return src;
   const lines = src.split('\n');
   const list = lines.slice(0, range.startLine).concat(lines.slice(range.endLine + 1));
@@ -276,8 +334,8 @@ function applyNumberAndToc(text, settings, cursorLine) {
   const headings = parseHeadings(numbered.text);
   const block = buildTocBlock(headings, s);
   let next;
-  if (findTocBlock(numbered.text)) {
-    next = replaceTocBlock(numbered.text, block);
+  if (findTocBlock(numbered.text, s)) {
+    next = replaceTocBlock(numbered.text, block, s);
   } else if (s.tocPosition === 'cursor' && Number.isFinite(cursorLine)) {
     next = insertBlockAtLine(numbered.text, block, cursorLine);
   } else {
@@ -307,6 +365,7 @@ function sampleText(settings) {
 
 class SimpleHeadingPlugin extends Plugin {
   async onload() {
+    // 只读一次设置：不扫描库、不监听事件、不起定时器
     await this.loadSettings();
 
     this.addCommand({
@@ -384,9 +443,10 @@ class SimpleHeadingPlugin extends Plugin {
     const settings = Object.assign({}, this.settings, { tocPosition: atCursor ? 'cursor' : this.settings.tocPosition });
     const headings = parseHeadings(text);
     const block = buildTocBlock(headings, settings);
+    const existed = findTocBlock(text, settings);
     let next;
-    if (findTocBlock(text)) {
-      next = replaceTocBlock(text, block); // 已有目录就原地更新，不重复插
+    if (existed) {
+      next = replaceTocBlock(text, block, settings); // 已有目录就地更新，不重复插
     } else if (atCursor) {
       next = insertBlockAtLine(text, block, editor.getCursor().line);
     } else {
@@ -394,11 +454,13 @@ class SimpleHeadingPlugin extends Plugin {
     }
     if (!this.applyText(editor, next)) return new Notice('目录已是最新，无需改动');
     const n = headings.filter((h) => h.level >= 2 && h.level <= settings.tocMaxLevel).length;
-    new Notice(`目录已${findTocBlock(text) ? '更新' : '插入'}，收录 ${n} 条`);
+    new Notice(`目录已${existed ? '更新' : '插入'}，收录 ${n} 条`);
   }
 
   runClear(editor) {
-    const cleared = clearNumbers(removeTocBlock(editor.getValue()));
+    const text = editor.getValue();
+    const withoutToc = removeTocBlock(text, this.settings);
+    const cleared = clearNumbers(withoutToc, this.settings);
     if (!this.applyText(editor, cleared.text)) return new Notice('没有找到本插件添加的编号或目录');
     new Notice(`已清除 ${cleared.count} 个标题编号，并移除目录块（其他内容未改动）`);
   }
@@ -440,8 +502,18 @@ class SimpleHeadingSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '目录' });
     new Setting(containerEl)
       .setName('目录标题')
-      .setDesc('目录块第一行的加粗文字；留空则不要这一行')
+      .setDesc('目录块首行的加粗文字，同时也是识别目录块的依据；留空则只认"连续两行以上的内部标题链接"')
       .addText((t) => t.setValue(s.tocTitle).onChange(bind('tocTitle', (v) => v.trim())));
+    new Setting(containerEl)
+      .setName('目录块标记')
+      .setDesc('默认不加任何标记（推荐）：靠"加粗标题 + 内部标题链接"结构识别，文档里不留插件痕迹')
+      .addDropdown((d) =>
+        d
+          .addOption('none', '不加标记（推荐，文档更干净）')
+          .addOption('comment', '用 HTML 注释包住（识别最稳，但源码里能看到两行注释）')
+          .setValue(s.tocMarker)
+          .onChange(bind('tocMarker'))
+      );
     new Setting(containerEl)
       .setName('默认插入位置')
       .setDesc('「仅插入 / 更新目录」用它；光标处另有专门命令')
@@ -465,10 +537,15 @@ class SimpleHeadingSettingTab extends PluginSettingTab {
     containerEl.createEl('p', {
       cls: 'setting-item-description',
       text:
-        '只在命令面板 / 快捷键触发时改文档，不会自动动你的笔记。加的序号只有 1. / 1.1 / 一、 这几种形态，' +
-        '目录块用 HTML 注释标记包住 —— 所以「清除标题编号与目录」可以精确还原，卸载插件也不影响文档。',
+        '启动开销：onload 只读一次设置、注册命令与设置页 —— 不遍历库、不监听事件、不起定时器，也不访问 vault。' +
+        '文档改动：只在命令面板 / 快捷键触发时发生，绝不自动改。',
     });
-    containerEl.createEl('p', { cls: 'setting-item-description', text: '建议给「一键：重排编号 + 更新目录」绑个快捷键（设置 → 快捷键）。' });
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text:
+        '加的序号只有 1. / 1.1 / 一、 这几种形态；目录块默认不带任何注释标记。' +
+        '所以「清除标题编号与目录」能精确还原，卸载插件也不影响文档。',
+    });
   }
 }
 
@@ -485,6 +562,10 @@ module.exports.__test = {
   formatHeadingNumber,
   stripNumberPrefix,
   parseHeadings,
+  isTocEntryLine,
+  isBoldOnlyLine,
+  findMarkedBlock,
+  findTocByShape,
   findTocBlock,
   tocLineSet,
   renumberText,

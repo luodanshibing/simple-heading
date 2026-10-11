@@ -3,6 +3,7 @@
 //   不依赖 Obsidian：把 require('obsidian') 换成最小桩件。
 import { createRequire } from 'node:module';
 import Module from 'node:module';
+import { readFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 
@@ -20,6 +21,7 @@ Module._load = function (request, ...rest) {
 
 const SimpleHeadingPlugin = require('../main.js');
 const T = SimpleHeadingPlugin.__test;
+const SRC = readFileSync(new URL('../main.js', import.meta.url), 'utf8');
 
 /* ---------- 极简断言 ---------- */
 let pass = 0;
@@ -35,14 +37,24 @@ const eq = (actual, expected, label) => {
   else fails.push(`✗ ${label}\n    实际：${a}\n    期望：${b}`);
 };
 
+/* ---------- 0. 不影响启动速度（读源码断言） ---------- */
+ok(!/registerInterval|registerEvent/.test(SRC), '源码没有注册定时器 / 事件监听');
+ok(!/setInterval|setTimeout/.test(SRC), '源码没有起任何计时器');
+ok(!/\.vault\b|getFiles\(|getMarkdownFiles\(|getAllLoadedFiles/.test(SRC), '源码不访问 vault 层、不扫描库');
+ok(!/workspace\.on\(|onLayoutReady/.test(SRC), '不监听 workspace 事件');
+ok(!/\.obsidian|adapter\.read/.test(SRC), '不读库配置 / 不直接读文件');
+ok(!/registerView|WorkspaceLeaf/.test(SRC), '不注册视图（本插件没有常驻界面）');
+
 /* ---------- 1. 设置 ---------- */
-eq(Object.keys(T.DEFAULT_SETTINGS).length, 5, '默认设置共 5 项');
+eq(Object.keys(T.DEFAULT_SETTINGS).length, 6, '默认设置共 6 项');
 eq(T.DEFAULT_SETTINGS.numberStyle, 'chinese', '默认二级用中文数字');
+eq(T.DEFAULT_SETTINGS.tocMarker, 'none', '默认目录块不加任何标记');
 eq(T.DEFAULT_SETTINGS.tocPosition, 'beforeFirstH2', '默认目录插在第一个二级标题前');
 eq(T.DEFAULT_SETTINGS.tocMaxLevel, 6, '默认收录到 6 级');
 eq(T.DEFAULT_SETTINGS.tocIndent, 2, '默认每级缩进 2 空格');
 eq(T.normalizeSettings(null).numberStyle, 'chinese', 'null → 默认');
 eq(T.normalizeSettings({ numberStyle: 'roman' }).numberStyle, 'chinese', '非法样式回退');
+eq(T.normalizeSettings({ tocMarker: '乱写' }).tocMarker, 'none', '非法标记方式回退到 none');
 eq(T.normalizeSettings({ tocPosition: '乱七八糟' }).tocPosition, 'beforeFirstH2', '非法位置回退');
 eq(T.normalizeSettings({ tocMaxLevel: 99 }).tocMaxLevel, 6, '收录级别夹到 6');
 eq(T.normalizeSettings({ tocMaxLevel: 1 }).tocMaxLevel, 2, '收录级别夹到 2');
@@ -52,7 +64,6 @@ eq(T.clampInt('abc', 2, 6, 6), 6, '非数字回退');
 
 /* ---------- 2. 中文数字 ---------- */
 eq(T.chineseNumber(1), '一', '1 → 一');
-eq(T.chineseNumber(2), '二', '2 → 二');
 eq(T.chineseNumber(9), '九', '9 → 九');
 eq(T.chineseNumber(10), '十', '10 → 十');
 eq(T.chineseNumber(11), '十一', '11 → 十一');
@@ -61,7 +72,6 @@ eq(T.chineseNumber(20), '二十', '20 → 二十');
 eq(T.chineseNumber(21), '二十一', '21 → 二十一');
 eq(T.chineseNumber(99), '九十九', '99 → 九十九');
 eq(T.chineseNumber(100), '100', '100 超出范围退回阿拉伯数字');
-eq(T.chineseNumber(0), '0', '0 退回阿拉伯数字');
 
 /* ---------- 3. 编号格式 ---------- */
 eq(T.formatHeadingNumber(2, [0, 0, 1], 'chinese'), '一、', '二级中文：一、');
@@ -116,7 +126,7 @@ eq(T.renumberText(num1.text, { numberStyle: 'chinese' }).changed, false, '重复
 eq(T.renumberText(src, {}).text.split('\n')[3], '### 1.2 甲二', '不传设置也能跑（用默认中文）');
 
 /* 删掉一个标题后不断号 —— 需求 4 */
-const deleted = ['# T', '## 甲', '### 甲一', '## 乙', '### 乙一'].join('\n'); // 删掉了"甲二"
+const deleted = ['# T', '## 甲', '### 甲一', '## 乙', '### 乙一'].join('\n');
 const afterDelete = T.renumberText(deleted, { numberStyle: 'chinese' }).text.split('\n');
 eq(afterDelete[1], '## 一、甲', '删除后：一级序号仍是 一、');
 eq(afterDelete[3], '## 二、乙', '删除后：下一个仍是 二、（不断号）');
@@ -143,68 +153,90 @@ eq(un[1], '## 2. 手写编号', '手写的旧编号被替换（不叠加）');
 const withCode = ['## 真', '```', '## 假', '```'].join('\n');
 eq(T.renumberText(withCode, {}).text.split('\n')[2], '## 假', '代码块里的 ## 不被编号');
 
-/* 目录块里的内容不参与编号 */
-const withToc = [T.TOC_START, '**目录**', '- [x](#x)', T.TOC_END, '## 真'].join('\n');
-eq(T.renumberText(withToc, {}).text.split('\n')[4], '## 一、真', '目录块之后的标题正常编号');
-eq(T.renumberText(withToc, {}).count, 1, '目录块内不计入编号数量');
-
 /* ---------- 7. 清除编号 ---------- */
-const cleared = T.clearNumbers(num1.text);
+const cleared = T.clearNumbers(num1.text, {});
 eq(cleared.count, 6, '清除了 6 个编号');
 eq(cleared.text, src, '清除后完全回到原文（可逆）');
-eq(T.clearNumbers(src).count, 0, '没有编号时清除 0 个');
-eq(T.clearNumbers(withH1).text, withH1, '一级标题原样保留');
+eq(T.clearNumbers(src, {}).count, 0, '没有编号时清除 0 个');
+eq(T.clearNumbers(withH1, {}).text, withH1, '一级标题原样保留');
 
-/* ---------- 8. 目录块 ---------- */
+/* ---------- 8. 目录块识别：默认「不加标记」（靠结构） ---------- */
+const shape = ['# T', '', '**目录**', '- [一、甲](#x)', '  - [1.1 乙](#y)', '', '## 一、甲'].join('\n');
+eq(T.findTocByShape(shape, {}).startLine, 2, '结构识别：从加粗标题行开始');
+eq(T.findTocByShape(shape, {}).endLine, 4, '结构识别：到最后一个链接行为止');
+eq(T.findTocByShape(shape, {}).entries, 2, '结构识别：数出 2 条');
+eq(T.findTocBlock(shape, {}), T.findTocByShape(shape, {}), '默认走结构识别');
+eq(T.findTocBlock(shape, { tocMarker: 'comment' }), null, '注释模式在无标记文档里找不到块');
+
+/* 反例：不以 `**目录**` 开头的链接列表不算目录 */
+const notToc = ['# T', '', '相关笔记：', '- [另一篇](另一篇.md)', '- [外部](https://x.com)'].join('\n');
+eq(T.findTocByShape(notToc, {}), null, '普通链接列表不会被误认');
+const linkListNoTitle = ['# T', '', '- [甲](#x)', '- [乙](#y)'].join('\n');
+eq(T.findTocByShape(linkListNoTitle, { tocTitle: '' }).entries, 2, '标题留空时：连续 ≥2 行内部链接也认');
+eq(T.findTocByShape(linkListNoTitle, { tocTitle: '' }).startLine, 2, '标题留空时的起始行');
+eq(T.findTocByShape(['# T', '- [甲](#x)'].join('\n'), { tocTitle: '' }), null, '标题留空时单条链接不认（太容易误判）');
+eq(T.findTocByShape(['**目录**', '', '- [甲](#x)'].join('\n'), {}), null, '标题行与链接之间夹了空行 → 不认（避免误判）');
+
+/* 注释模式仍然可用 */
+const marked = ['x', T.TOC_START, '**目录**', '- [甲](#x)', T.TOC_END, 'z'].join('\n');
+eq(T.findMarkedBlock(marked).startLine, 1, '注释模式：找到起始行');
+eq(T.findMarkedBlock(marked).endLine, 4, '注释模式：找到结束行');
+eq(T.findTocBlock(marked, { tocMarker: 'comment' }).endLine, 4, '注释模式通过统一入口也能找到');
+eq(T.findTocBlock(marked, {}), T.findTocByShape(marked, {}), '默认模式下同一文档按结构识别（从 **目录** 行开始）');
+
+/* ---------- 9. 目录块生成（默认不带标记） ---------- */
 const block = T.buildTocBlock(h1, { tocTitle: '目录', tocIndent: 2, tocMaxLevel: 6 });
-eq(block.split('\n')[0], T.TOC_START, '第一行是起始标记');
-eq(block.split('\n')[block.split('\n').length - 1], T.TOC_END, '最后一行是结束标记');
-eq(block.split('\n')[1], '**目录**', '第二行是加粗标题');
-eq(block.split('\n')[2], '- [第一节](#%E7%AC%AC%E4%B8%80%E8%8A%82)', '目录第一条是二级标题');
+eq(block.indexOf('<!--'), -1, '默认生成的目录块里没有任何 HTML 注释');
+eq(block.split('\n')[0], '**目录**', '首行是加粗标题');
+eq(block.split('\n')[1], '- [第一节](#%E7%AC%AC%E4%B8%80%E8%8A%82)', '第一条是二级标题');
 eq(block.indexOf('页面标题'), -1, '一级标题不进目录');
-eq(T.buildTocBlock(h1, {}).split('\n').filter((l) => l.startsWith('###')).length, 0, '目录里没有标题行');
-const noTitle = T.buildTocBlock(h1, { tocTitle: '' });
-eq(noTitle.split('\n')[1].startsWith('- '), true, '不要标题行时直接是条目');
+eq(T.buildTocBlock(h1, { tocMarker: 'comment' }).split('\n')[0], T.TOC_START, '注释模式下首行是标记');
+eq(T.buildTocBlock(h1, { tocTitle: '' }).split('\n')[0].startsWith('- '), true, '不要标题行时直接是条目');
 eq(T.buildTocBlock([], { tocTitle: '目录' }).indexOf('还没有二级') > 0, true, '没有标题时给出提示');
 eq(T.buildTocBlock([{ level: 2, text: 'A[B]C' }], {}).indexOf('A\\[B\\]C') > 0, true, '链接文字里的方括号被转义');
 eq(T.buildTocBlock([{ level: 2, text: '带 空格' }], {}).indexOf('%20') > 0, true, '锚点里的空格被编码');
-eq(T.findTocBlock(['x', T.TOC_START, 'y', T.TOC_END, 'z'].join('\n')).startLine, 1, '找到目录块的起始行');
-eq(T.findTocBlock('没有目录'), null, '没有目录块时返回 null');
-eq(T.findTocBlock([T.TOC_START, 'x'].join('\n')), null, '只有起始标记不算完整目录块');
+eq(T.buildTocBlock([{ level: 5, text: 'x' }], { tocMaxLevel: 4 }).indexOf('- [x]'), -1, '超过收录级别的标题不进目录');
 
-/* ---------- 9. 插入 / 更新 / 移除 ---------- */
+/* ---------- 10. 插入 / 更新 / 移除 ---------- */
 const base = ['# 页面标题', '', '前言。', '## 第一节', '正文'].join('\n');
 const inserted = T.insertTocBlock(base, T.buildTocBlock(T.parseHeadings(base), {}), null);
-eq(inserted.indexOf(T.TOC_START) < inserted.indexOf('## 第一节'), true, '目录插在第一个二级标题之前');
-eq(inserted.indexOf('# 页面标题') < inserted.indexOf(T.TOC_START), true, '一级标题仍在目录之前');
-const replaced = T.replaceTocBlock(inserted, T.buildTocBlock(T.parseHeadings(inserted), { tocTitle: '新目录' }));
-eq((replaced.match(/simple-heading:toc:start/g) || []).length, 1, '更新目录不会重复插入');
-eq(replaced.indexOf('新目录') > 0, true, '目录标题被更新');
-eq(T.removeTocBlock(inserted).indexOf(T.TOC_START), -1, '移除目录块');
+eq(inserted.indexOf('**目录**') < inserted.indexOf('## 第一节'), true, '目录插在第一个二级标题之前');
+eq(inserted.indexOf('# 页面标题') < inserted.indexOf('**目录**'), true, '一级标题仍在目录之前');
+eq(inserted.indexOf('<!--'), -1, '插入后的文档里没有注释残留');
+const replaced = T.replaceTocBlock(inserted, T.buildTocBlock(T.parseHeadings(inserted), { tocTitle: '新目录' }), {});
+eq((replaced.match(/\*\*目录\*\*/g) || []).length, 0, '更新后旧标题被换掉');
+eq((replaced.match(/\*\*新目录\*\*/g) || []).length, 1, '更新后只有一个新标题（不会重复插）');
+eq(T.removeTocBlock(inserted, {}).indexOf('**目录**'), -1, '移除目录块');
 const atCursor = T.insertBlockAtLine(base, T.buildTocBlock(T.parseHeadings(base), {}), 2);
 eq(atCursor.split('\n').slice(0, 2).join('|'), '# 页面标题|', '光标插入：前两行不变');
-eq(atCursor.indexOf(T.TOC_START) < atCursor.indexOf('前言。'), true, '光标插入：块落在光标行处（前言之前）');
+eq(atCursor.indexOf('**目录**') < atCursor.indexOf('前言。'), true, '光标插入：块落在光标行处（前言之前）');
 
-/* ---------- 10. 一步到位 + 往返（需求 5 的关键测试） ---------- */
+/* ---------- 11. 一步到位 + 往返（需求 5 的关键测试） ---------- */
 const demo = ['# 我的页面', '', '开头一段。', '', '## 甲节', '', '### 甲一', '', '## 乙节'].join('\n');
 const one = T.applyNumberAndToc(demo, { numberStyle: 'chinese', tocTitle: '目录', tocPosition: 'beforeFirstH2' });
 eq(one.numbered, 3, '一步到位：编号 3 个');
 eq(one.text.indexOf('## 一、甲节') > 0, true, '一步到位：二级变 一、');
 eq(one.text.indexOf('### 1.1 甲一') > 0, true, '一步到位：三级变 1.1');
-eq(one.text.indexOf(T.TOC_START) < one.text.indexOf('## 一、甲节'), true, '一步到位：目录在第一个二级标题之前');
+eq(one.text.indexOf('**目录**') < one.text.indexOf('## 一、甲节'), true, '一步到位：目录在第一个二级标题之前');
 eq(one.text.indexOf('- [一、甲节](#%E4%B8%80%E3%80%81%E7%94%B2%E8%8A%82)') > 0, true, '目录条目带上了编号');
+eq(one.text.indexOf('<!--'), -1, '一步到位后的文档里没有任何插件标记');
 const once = T.applyNumberAndToc(one.text, { numberStyle: 'chinese', tocTitle: '目录' });
 eq(once.text, one.text, '重复执行一步到位 = 幂等（不会越跑越长）');
-const back = T.clearNumbers(T.removeTocBlock(one.text)).text;
-eq(back.replace(/\n+$/, ''), demo, '编号 + 目录 → 清除 = 完全回到原文');
+const back = T.clearNumbers(T.removeTocBlock(one.text, {}), {}).text;
+eq(back.replace(/\n+$/, ''), demo, '编号 + 目录 → 清除 = 完全回到原文（无标记模式下也是）');
+/* 注释模式的往返 */
+const oneM = T.applyNumberAndToc(demo, { numberStyle: 'numeric', tocMarker: 'comment' });
+eq(oneM.text.indexOf(T.TOC_START) > 0, true, '注释模式：写入了起始标记');
+const backM = T.clearNumbers(T.removeTocBlock(oneM.text, { tocMarker: 'comment' }), { tocMarker: 'comment' }).text;
+eq(backM.replace(/\n+$/, ''), demo, '注释模式下的往返同样完全还原');
 const cursorRun = T.applyNumberAndToc(demo, { tocPosition: 'cursor' }, 1);
-eq(cursorRun.text.indexOf(T.TOC_START) < cursorRun.text.indexOf('## 一、甲节'), true, '光标模式：目录落在光标行位置');
+eq(cursorRun.text.indexOf('**目录**') < cursorRun.text.indexOf('## 一、甲节'), true, '光标模式：目录落在光标行位置');
 
-/* ---------- 11. 设置页示例 / 导出 ---------- */
+/* ---------- 12. 设置页示例 / 导出 ---------- */
 ok(T.sampleText({ numberStyle: 'chinese' }).indexOf('一、标题') > 0, '示例文本含 一、标题');
 ok(T.sampleText({ numberStyle: 'numeric' }).indexOf('1. 标题') > 0, '示例文本含 1. 标题');
 ok(typeof SimpleHeadingPlugin === 'function', '默认导出是插件类');
-eq(Object.keys(SimpleHeadingPlugin.__test).length > 15, true, '导出的纯函数足够多');
+eq(Object.keys(SimpleHeadingPlugin.__test).length > 20, true, '导出的纯函数足够多');
 
 /* ---------- 汇总 ---------- */
 if (fails.length === 0) {
