@@ -51,17 +51,17 @@ If you would rather have bulletproof identification than a clean document, set *
 
 - **Startup cost is one settings read.** `onload` does exactly three things: `loadData()`, register five commands, register the settings tab. It does not walk the vault, does not read files, does not register a single event listener, view or timer, and never touches `app.vault`. The test suite asserts all of this by reading `main.js` as text — so the claim cannot silently rot.
 - **Nothing is ever changed automatically.** Every edit happens inside a command you invoked. Open a note, do nothing, and the bytes do not move.
-- **Everything written is reversible.** The only things this plugin adds are numbers in the shapes `1.`, `1.1`, `1.2.3`, `一、` and a plain link list under a bold title. `清除标题编号与目录` removes exactly those. A heading like `## 2026 年计划` keeps its `2026`, because a number only counts as "ours" when it is followed by `. ` or a Chinese numeral followed by `、`. The test suite includes a byte-exact round trip (number + TOC → clear → identical to the original) in both modes.
+- **Everything written is reversible.** The only things this plugin adds are numbers in the shapes `1.`, `1.1`, `1.2.3`, `一、` and a plain link list under a bold title. `清除编号与目录` removes exactly those. A heading like `## 2026 年计划` keeps its `2026`, because a number only counts as "ours" when it is followed by `. ` or a Chinese numeral followed by `、`. The test suite includes a byte-exact round trip (number + TOC → clear → identical to the original) in both modes.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
-| 一键：重排编号 + 更新目录 | Renumber everything, then create or update the TOC — bind this to a hotkey |
-| 仅重排标题编号（删过标题就用它） | Just the numbers |
-| 仅插入 / 更新目录 | Just the TOC, at the position from settings |
-| 在当前光标处插入目录 | Just the TOC, at the cursor |
-| 清除标题编号与目录（卸载前清理用） | Removes exactly what this plugin added |
+| 重排编号并更新目录 | Renumber everything, then create or update the TOC — bind this to a hotkey |
+| 重排编号 | Just the numbers |
+| 插入或更新目录 | Just the TOC, at the position from settings |
+| 在光标处插入目录 | Just the TOC, at the cursor |
+| 清除编号与目录（卸载前清理用） | Removes exactly what this plugin added |
 
 ### Settings
 
@@ -150,17 +150,17 @@ MIT — see [LICENSE](LICENSE).
 
 - **启动只读一次设置**：`onload` 只做三件事 —— `loadData()`、注册 5 个命令、注册设置页。不遍历库、不读文件、**不注册任何事件 / 视图 / 定时器**，也从不碰 `app.vault`。测试里有一条**把 `main.js` 当文本读**的断言在守这些结论，所以它不会悄悄失效。
 - **绝不自动改文档**：所有改动都发生在你主动触发的命令里。打开笔记什么都不点，字节就不会动。
-- **写进去的都能还原**：本插件只加两类东西 —— 形态固定的序号（`1.`、`1.1`、`1.2.3`、`一、`），和"加粗标题 + 链接列表"的目录块。「清除标题编号与目录」只删这两类。`## 2026 年计划` 里的 `2026` 不会被吃掉（只有"数字 + `. `"或"中文数字 + `、`"才算我们加的）。测试里有**逐字节往返断言**：编号+目录 → 清除 → 必须与原文件完全一致（两种模式都验）。
+- **写进去的都能还原**：本插件只加两类东西 —— 形态固定的序号（`1.`、`1.1`、`1.2.3`、`一、`），和"加粗标题 + 链接列表"的目录块。「清除编号与目录」只删这两类。`## 2026 年计划` 里的 `2026` 不会被吃掉（只有"数字 + `. `"或"中文数字 + `、`"才算我们加的）。测试里有**逐字节往返断言**：编号+目录 → 清除 → 必须与原文件完全一致（两种模式都验）。
 
 ### 命令
 
 | 命令 | 作用 |
 |---|---|
-| 一键：重排编号 + 更新目录 | 编号 + 目录一次做完（建议绑快捷键） |
-| 仅重排标题编号（删过标题就用它） | 只重排编号 |
-| 仅插入 / 更新目录 | 只处理目录，位置按设置 |
-| 在当前光标处插入目录 | 只处理目录，插在光标处 |
-| 清除标题编号与目录（卸载前清理用） | 精确删掉本插件加过的东西 |
+| 重排编号并更新目录 | 编号 + 目录一次做完（建议绑快捷键） |
+| 重排编号 | 只重排编号 |
+| 插入或更新目录 | 只处理目录，位置按设置 |
+| 在光标处插入目录 | 只处理目录，插在光标处 |
+| 清除编号与目录（卸载前清理用） | 精确删掉本插件加过的东西 |
 
 ### 设置项
 
