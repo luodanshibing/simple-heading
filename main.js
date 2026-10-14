@@ -370,27 +370,27 @@ class SimpleHeadingPlugin extends Plugin {
 
     this.addCommand({
       id: 'number-and-toc',
-      name: '一键：重排编号 + 更新目录',
+      name: '重排编号并更新目录',
       editorCallback: (editor) => this.runNumberAndToc(editor),
     });
     this.addCommand({
       id: 'number-only',
-      name: '仅重排标题编号（删过标题就用它）',
+      name: '重排编号',
       editorCallback: (editor) => this.runNumber(editor),
     });
     this.addCommand({
       id: 'toc',
-      name: '仅插入 / 更新目录',
+      name: '插入或更新目录',
       editorCallback: (editor) => this.runToc(editor, false),
     });
     this.addCommand({
       id: 'toc-at-cursor',
-      name: '在当前光标处插入目录',
+      name: '在光标处插入目录',
       editorCallback: (editor) => this.runToc(editor, true),
     });
     this.addCommand({
       id: 'clear',
-      name: '清除标题编号与目录（卸载前清理用）',
+      name: '清除编号与目录',
       editorCallback: (editor) => this.runClear(editor),
     });
 
@@ -489,7 +489,7 @@ class SimpleHeadingSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '编号' });
     new Setting(containerEl)
       .setName('二级标题编号样式')
-      .setDesc('三级起一律数字（1.1、1.2、1.2.3……）；一级标题（#）永远不编号')
+      .setDesc('三级起用数字编号；一级标题永不编号')
       .addDropdown((d) =>
         d
           .addOption('chinese', '中文：一、二、三、')
@@ -502,11 +502,11 @@ class SimpleHeadingSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '目录' });
     new Setting(containerEl)
       .setName('目录标题')
-      .setDesc('目录块首行的加粗文字，同时也是识别目录块的依据；留空则只认"连续两行以上的内部标题链接"')
+      .setDesc('目录块首行的加粗文字，也是识别目录块的依据')
       .addText((t) => t.setValue(s.tocTitle).onChange(bind('tocTitle', (v) => v.trim())));
     new Setting(containerEl)
       .setName('目录块标记')
-      .setDesc('默认不加任何标记（推荐）：靠"加粗标题 + 内部标题链接"结构识别，文档里不留插件痕迹')
+      .setDesc('不加标记，靠结构识别，文档里不留痕迹')
       .addDropdown((d) =>
         d
           .addOption('none', '不加标记（推荐，文档更干净）')
